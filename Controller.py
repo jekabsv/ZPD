@@ -50,10 +50,9 @@ pid = PID(Kp, Ki, Kd, output_limits=(0, 65535), scale='s')
 hama = HAMA(26, 22, 21)
 defexposure = 0.01
 
-StartTemp = 130
-StopTemp = 150
-TempSpeed = 5
-tolerance = 5
+StartTemp = 20
+StopTemp = 50
+TempSpeed = 2
 running = False
 next_spectrum_temp = StartTemp
 pid_start_time = None
@@ -62,6 +61,11 @@ prev_time = ticks_ms()
 DEBUG_AUTO_START = False
 auto_started = False
 duty = 0
+exposition = 0.2
+
+spectra2 = None
+
+last_spectrum_time = time.ticks_ms()
 
 while True:
     raw = read_raw()
@@ -76,6 +80,7 @@ while True:
                 numbers = list(map(float, line.replace(',', '.').split()))
                 cmd = int(numbers[0])
                 if cmd == 0:
+                    duty = 0
                     pid.output_sum = 0
                     pid.last_input = 0
                     pid.deactivated = False
@@ -90,13 +95,13 @@ while True:
                     next_spectrum_temp = 0
                     running = False
                     auto_started = False
-                    tolerance = 0.5
                     heater_pwm.duty_u16(0)
+                    exposition = 0.2
                 elif cmd == 1:
                     TempSpeed = numbers[1]
                     StartTemp = numbers[2]
                     StopTemp = numbers[3]
-                    tolerance = numbers[4] if len(numbers) > 4 else 0.5
+                    exposition = numbers[4]
                     running = True
                     pid_start_time = time.ticks_ms()
                     process_time = 0
@@ -107,6 +112,13 @@ while True:
             except ValueError:
                 pass
             
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_spectrum_time) >= 1000:
+        last_spectrum_time = now
+#         spectra = hama.main(exposition, 1)
+#         
+#         spectrum_str = ",".join(str(v) for v in spectra)
+#         print(f"Spectrum at Temp:{temp_str}C | Data:[{spectrum_str}]")
             
     if DEBUG_AUTO_START and not auto_started:
         running = True
@@ -123,31 +135,22 @@ while True:
         if process_time is not None:
             process_time += dt / 60000
             T_set_pid = StartTemp + TempSpeed * process_time
-            if T_set_pid > next_spectrum_temp:
-                T_set_pid = next_spectrum_temp
-                process_time -= dt / 60000
+#             if T_set_pid > next_spectrum_temp:
+#                 T_set_pid = next_spectrum_temp
+#                 process_time -= dt / 60000
         else:
             T_set_pid = pid.setpoint
         pid.setpoint = T_set_pid
         pid_output = pid(temp)
         duty = int(pid_output)
+        duty = 32768
         heater_pwm.duty_u16(duty)
+        #heater_pwm.duty_u16(65536)
 
-        if abs(temp - next_spectrum_temp) <= tolerance:
-#             overexposed, defexposure, spectra = hama.autoexposure(defexposure)
-#             spectrum_str = ",".join(str(v) for v in spectra)
-#             print(f"Spectrum at Temp:{temp_str}C | Data:[{spectrum_str}]")
-#             if overexposed:
-#                 print("Probably overexposed!")
-            spectra = hama.main(1, 1)
-            spectrum_str = ",".join(str(v) for v in spectra)
-            print(f"Spectrum at Temp:{temp_str}C | Data:[{spectrum_str}]")
-            next_spectrum_temp += 2
-            if next_spectrum_temp > StopTemp:
-                next_spectrum_temp = StopTemp
-                process_time = 0
+          
+        
 
-        if temp >= StopTemp-tolerance:
+        if temp >= StopTemp:
             heater_pwm.duty_u16(0)
             running = False
             process_time = 0
