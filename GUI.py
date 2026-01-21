@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import serial
+from serial.tools import list_ports
 import pandas as pd
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -11,8 +12,28 @@ from PyQt6.QtCore import QTimer
 import pyqtgraph as pg
 from collections import deque
 
-SERIAL_PORT = 'COM8'
+def find_pico_port():
+    for port in list_ports.comports():
+        desc = (port.description or "").lower()
+        hwid = (port.hwid or "").lower()
+
+        if (
+            "raspberry" in desc
+            or "pico" in desc
+            or "rp2040" in desc
+            or "2e8a" in hwid
+        ):
+            return port.device
+
+    return None
+
+
 BAUDRATE = 115200
+
+SERIAL_PORT = find_pico_port()
+if SERIAL_PORT is None:
+    raise RuntimeError("Raspberry Pi Pico not found on any COM port")
+
 MAX_SPECTRUM_POINTS = 288
 
 ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
@@ -31,18 +52,18 @@ class PicoGUI(QWidget):
         self.speed_input = QLineEdit()
         self.start_input = QLineEdit()
         self.stop_input = QLineEdit()
-        self.tolerance_input = QLineEdit()
+        self.exposition_input = QLineEdit()
         ctrl_layout.addWidget(QLabel("Heating Speed (°C/min)"))
         ctrl_layout.addWidget(self.speed_input)
         ctrl_layout.addWidget(QLabel("Start Temp (°C)"))
         ctrl_layout.addWidget(self.start_input)
         ctrl_layout.addWidget(QLabel("Stop Temp (°C)"))
         ctrl_layout.addWidget(self.stop_input)
-        ctrl_layout.addWidget(QLabel("Tolerance (°C)"))
-        ctrl_layout.addWidget(self.tolerance_input)
+        ctrl_layout.addWidget(QLabel("Exposition (s)"))
+        ctrl_layout.addWidget(self.exposition_input)
 
         self.temp_label = QLabel("Temp: --- °C")
-        self.setpoint_label = QLabel("Next Setpoint: --- °C")
+        self.setpoint_label = QLabel("PID_duty: --- °C")
         ctrl_layout.addWidget(self.temp_label)
         ctrl_layout.addWidget(self.setpoint_label)
 
@@ -76,23 +97,26 @@ class PicoGUI(QWidget):
         self.time_data = deque(maxlen=600)
         self.spectrum_data = [0] * MAX_SPECTRUM_POINTS
         self.nm_axis = list(range(MAX_SPECTRUM_POINTS))
-        self.start_time = time.time()
+        self.starzt_time = time.time()
         self.spectrum_records = []
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(200)
+        
+        QTimer.singleShot(500, self.send_reset_command)
+
 
     def send_start_command(self):
         try:
             speed = float(self.speed_input.text())
             start = float(self.start_input.text())
             stop = float(self.stop_input.text())
-            tolerance = float(self.tolerance_input.text())
+            exposition = float(self.exposition_input.text())
         except ValueError:
             print("Invalid input values")
             return
-        cmd = f"1 {speed} {start} {stop} {tolerance}\n"
+        cmd = f"1 {speed} {start} {stop} {exposition}\n"
         ser.write(cmd.encode())
         print("Sent command:", cmd.strip())
         self.start_time = time.time()
@@ -123,9 +147,10 @@ class PicoGUI(QWidget):
                     temp_part = parts[0].strip()
                     setpoint_part = parts[1].strip()
                     pid_part = parts[2].strip()
+                    duty = parts[3].strip()
 
                     temp_val = float(temp_part.split(":")[1].replace("C", ""))
-                    next_setpoint = float(setpoint_part.split(":")[1].replace("C", ""))
+                    next_setpoint = float(duty.split(":")[1])
                     pid_val = float(pid_part.split(":")[1].replace("C", ""))
 
                     t = time.time() - self.start_time if self.start_time else 0
@@ -134,7 +159,7 @@ class PicoGUI(QWidget):
                     self.time_data.append(t)
 
                     self.temp_label.setText(f"Temp: {temp_val:.2f} °C")
-                    self.setpoint_label.setText(f"Next Setpoint: {next_setpoint:.2f} °C")
+                    self.setpoint_label.setText(f"PID_duty: {next_setpoint:.2f}")
 
                 except Exception as e:
                     print("Temp/Setpoint parse error:", e, line)
